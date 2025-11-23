@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto mt-4">
+    
+    <!-- Кнопка назад -->
+    <a href="/" class="text-slate-400 hover:text-white text-sm mb-4 inline-block">← {{ ctx.ui.back_home }}</a>
+
+    <!-- Карточка задания -->
+    <div class="bg-slate-800 rounded-2xl p-8 border border-slate-700 shadow-2xl">
+        <div class="mb-6">
+            <span class="text-xs font-semibold uppercase text-blue-400 tracking-wider">
+                {{ ctx.ui.training_title }} <span class="text-white">{{ target_lang_name }}</span>
+            </span>
+            <h2 class="text-3xl font-bold mt-3 leading-tight text-white">
+                {{ question_text }}
+            </h2>
+        </div>
+
+        {% if phrase %}
+        <form action="/check" method="post" class="space-y-4">
+            <input type="hidden" name="phrase_id" value="{{ phrase.id }}">
+            <input type="hidden" name="original_text" value="{{ question_text }}">
+            <input type="hidden" name="target_lang_code" value="{{ target_lang_code }}">
+            <input type="hidden" name="topic_slug" value="{{ topic_slug }}">
+
+            <textarea 
+                name="user_translation" 
+                rows="3" 
+                class="w-full bg-slate-900 border border-slate-600 rounded-lg p-4 text-lg text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition placeholder-slate-600"
+                placeholder="{{ ctx.ui.placeholder }}"
+                required
+                {% if result %}disabled{% endif %}
+            >{{ user_input if user_input else '' }}</textarea>
+
+            {% if not result %}
+            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-lg transition text-lg shadow-lg shadow-blue-900/20">
+                {{ ctx.ui.btn_check }} ✨
+            </button>
+            {% endif %}
+        </form>
+        {% endif %}
+    </div>
+
+    <!-- Результат проверки AI -->
+    {% if result %}
+    <div class="mt-6 bg-slate-800 rounded-2xl p-6 border {% if result.score >= 80 %}border-green-500{% elif result.score >= 50 %}border-yellow-500{% else %}border-red-500{% endif %} animate-fade-in shadow-xl">
+        <div class="flex justify-between items-start mb-4">
+            <div>
+                <p class="text-sm text-slate-400">AI Score</p>
+                <div class="text-4xl font-bold {% if result.score >= 80 %}text-green-400{% elif result.score >= 50 %}text-yellow-400{% else %}text-red-400{% endif %}">
+                    {{ result.score }}/100
+                </div>
+            </div>
+            <div class="text-right pl-4">
+                <p class="text-sm text-slate-400">{{ ctx.ui.ideal_trans }}</p>
+                <p class="text-lg font-medium text-white">{{ result.ideal_translation }}</p>
+            </div>
+        </div>
+        
+        <div class="bg-slate-900/50 p-4 rounded-lg border border-slate-700">
+            <p class="text-slate-300 leading-relaxed">
+                🤖 <span class="font-semibold text-white">{{ ctx.ui.ai_advice }}:</span> {{ result.explanation }}
+            </p>
+        </div>
+
+<div class="mt-6">
+    {% if topic_slug == 'mistakes' %}
+        <!-- Если это режим ошибок - идем на /mistakes -->
+        <a href="/mistakes" class="block text-center w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-lg transition">
+            {{ ctx.ui.btn_next }} (Mistakes) →
+        </a>
+    {% else %}
+        <!-- Если это обычная тема - идем на /training/... -->
+        <a href="/training/{{ topic_slug }}" class="block text-center w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-lg transition">
+            {{ ctx.ui.btn_next }} →
+        </a>
+    {% endif %}
+</div>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

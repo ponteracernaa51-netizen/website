@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="{{ ctx.lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FluentEdgeAI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>body { font-family: 'Inter', sans-serif; }</style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex flex-col">
+
+    <nav class="border-b border-slate-700 p-4 bg-slate-900/90 backdrop-blur sticky top-0 z-50">
+        <div class="container mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+            <a href="/" class="text-2xl font-bold text-blue-500 flex items-center gap-2">
+                ⚡ FluentEdge<span class="text-white">AI</span>
+            </a>
+
+            <div class="flex flex-wrap justify-center items-center gap-4 text-sm">
+                
+                <!-- Выбор языка интерфейса -->
+                <div class="flex gap-2 bg-slate-800 p-1 rounded-lg">
+                    <a href="/set_settings?lang=ru" class="px-2 py-1 rounded {% if ctx.lang == 'ru' %}bg-blue-600 text-white{% else %}text-slate-400 hover:text-white{% endif %}">RU</a>
+                    <a href="/set_settings?lang=en" class="px-2 py-1 rounded {% if ctx.lang == 'en' %}bg-blue-600 text-white{% else %}text-slate-400 hover:text-white{% endif %}">EN</a>
+                    <a href="/set_settings?lang=uz" class="px-2 py-1 rounded {% if ctx.lang == 'uz' %}bg-blue-600 text-white{% else %}text-slate-400 hover:text-white{% endif %}">UZ</a>
+                </div>
+
+                <!-- Выбор направления -->
+                <div class="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg">
+                    <span class="text-slate-400 hidden sm:inline">{{ ctx.ui.dir_label }}</span>
+                    <select onchange="window.location.href='/set_settings?direction='+this.value" class="bg-transparent outline-none font-bold text-blue-400 cursor-pointer">
+                        <option value="RU-EN" class="bg-slate-800" {% if ctx.dir == 'RU-EN' %}selected{% endif %}>RU → EN</option>
+                        <option value="EN-RU" class="bg-slate-800" {% if ctx.dir == 'EN-RU' %}selected{% endif %}>EN → RU</option>
+                        <option value="UZ-EN" class="bg-slate-800" {% if ctx.dir == 'UZ-EN' %}selected{% endif %}>UZ → EN</option>
+                        <option value="EN-UZ" class="bg-slate-800" {% if ctx.dir == 'EN-UZ' %}selected{% endif %}>EN → UZ</option>
+                    </select>
+                </div>
+
+                <!-- Вход / Выход -->
+                {% if ctx.is_auth %}
+                    <a href="/logout" class="text-red-400 hover:text-red-300 border border-slate-700 px-3 py-1 rounded">{{ ctx.ui.nav_logout }}</a>
+                {% else %}
+                    <a href="/login" class="bg-blue-600 hover:bg-blue-500 px-4 py-1.5 rounded font-semibold transition">{{ ctx.ui.nav_login }}</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+
+    <main class="container mx-auto p-6 flex-grow">
+        {% block content %}
+        
+        <!-- Статистика и Сброс -->
+        <div class="mb-10 max-w-4xl mx-auto">
+            {% if stats %}
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 text-center">
+                    <p class="text-slate-400 text-xs uppercase font-bold">{{ ctx.ui.stat_total }}</p>
+                    <p class="text-3xl font-bold text-white mt-1">{{ stats.total }}</p>
+                </div>
+                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 text-center">
+                    <p class="text-slate-400 text-xs uppercase font-bold">{{ ctx.ui.stat_avg }}</p>
+                    <p class="text-3xl font-bold {% if stats.avg >= 80 %}text-green-400{% elif stats.avg >= 50 %}text-yellow-400{% else %}text-slate-200{% endif %} mt-1">
+                        {{ stats.avg }}
+                    </p>
+                </div>
+                <div class="bg-slate-800/50 p-6 rounded-xl border border-slate-700/50 flex items-center justify-center">
+                    <a href="/reset_progress" onclick="return confirm('Are you sure?')" class="text-red-400 hover:text-red-300 text-sm font-bold flex items-center gap-2">
+                        🗑 {{ ctx.ui.btn_reset }}
+                    </a>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+                {% if mistakes_count > 0 %}
+        <div class="mb-8">
+            <a href="/mistakes" class="group block bg-red-900/30 border border-red-500/50 p-6 rounded-xl hover:bg-red-900/50 transition flex justify-between items-center">
+                <div>
+                    <h2 class="text-2xl font-bold text-red-400 mb-1">🚨 {{ ctx.ui.btn_mistakes }}</h2>
+                    <p class="text-slate-400 text-sm">You need to fix: <span class="text-white font-bold">{{ mistakes_count }}</span> phrases</p>
+                </div>
+                <div class="bg-red-600 text-white w-10 h-10 rounded-full flex items-center justify-center font-bold shadow-lg shadow-red-900/50 group-hover:scale-110 transition">
+                    !
+                </div>
+            </a>
+        </div>
+        {% endif %}
+
+        <h1 class="text-3xl font-bold mb-6 text-center">{{ ctx.ui.hero_title }}</h1>
+        
+<!-- ... (блок ошибок и заголовок остаются выше) ... -->
+        
+        <div class="space-y-12">
+            {% for level in levels %}
+            <div class="animate-fade-in">
+                <!-- Заголовок уровня -->
+                <div class="flex items-center gap-4 mb-6 border-b border-slate-800 pb-2">
+                    <div class="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center font-bold text-lg shadow-lg shadow-blue-900/50">
+                        {{ level.slug|upper }}
+                    </div>
+                    <h2 class="text-2xl font-bold text-slate-200">{{ level.title }}</h2>
+                </div>
+
+                <!-- Сетка тем этого уровня -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {% for topic in level.topics %}
+                    <a href="/training/{{ topic.slug }}" class="group block bg-slate-800 p-6 rounded-xl border border-slate-700 hover:border-blue-500 transition hover:-translate-y-1 relative overflow-hidden">
+                        <!-- Легкий градиент на фоне -->
+                        <div class="absolute inset-0 bg-gradient-to-br from-blue-600/10 to-transparent opacity-0 group-hover:opacity-100 transition"></div>
+                        
+                        <div class="relative z-10">
+                            <div class="flex justify-between items-start">
+                                <h2 class="text-xl font-bold group-hover:text-blue-400 transition">
+                                    {% if ctx.lang == 'ru' %}{{ topic.title_ru }}
+                                    {% elif ctx.lang == 'uz' %}{{ topic.title_uz }}
+                                    {% else %}{{ topic.title_en }}
+                                    {% endif %}
+                                </h2>
+                            </div>
+                            <p class="text-slate-400 mt-3 text-sm flex items-center gap-2">
+                                <span class="w-2 h-2 rounded-full bg-green-500"></span>
+                                {{ ctx.ui.start }}
+                            </p>
+                        </div>
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        
+        <!-- Если тем вообще нет (пустая база) -->
+        {% if not levels %}
+        <div class="text-center py-20">
+            <p class="text-slate-500 text-xl">Темы пока не добавлены или не привязаны к уровням.</p>
+        </div>
+        {% endif %}
+        {% endblock %}
+    </main>
+
+    <footer class="border-t border-slate-800 p-6 text-center text-slate-500 text-sm">
+        &copy; 2024 FluentEdgeAI. Learning without limits.
+    </footer>
+
+</body>
+</html>

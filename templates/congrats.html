@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-md mx-auto text-center mt-20">
+    <div class="text-6xl mb-4">🎉</div>
+    <h1 class="text-4xl font-bold text-white mb-4">Тема пройдена!</h1>
+    <p class="text-slate-400 mb-8 text-lg">Вы успешно перевели все фразы в этом разделе.</p>
+    
+    <div class="space-y-4">
+        <a href="/" class="block w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-lg transition">
+            Выбрать новую тему
+        </a>
+        <a href="/training/{{ topic_slug }}" class="block w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-lg border border-slate-600 transition">
+            Пройти заново
+        </a>
+    </div>
+</div>
+{% endblock %}
