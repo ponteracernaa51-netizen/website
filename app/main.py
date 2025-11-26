@@ -94,22 +94,25 @@ async def login_page(request: Request):
 
 @app.post("/auth_action")
 async def auth_action(request: Request, email: str = Form(...), password: str = Form(...)):
-    """ФИНАЛЬНАЯ ВЕРСИЯ: С подрбоным отчетом об ошибках"""
+    """ФИНАЛЬНАЯ ВЕРСИЯ: Исправлена ошибка UnboundLocalError"""
     
-    # 1. Очистка
+    # 1. Очистка и Валидация
+    import re
     email = re.sub(r'[^a-zA-Z0-9@._-]', '', email).strip().lower()
     password = password.strip()
     
-    # 2. Проверка на дурака (валидация на бэкенде)
     if not email or "@" not in email:
         return HTMLResponse("<h3>Ошибка: Некорректный Email!</h3><a href='/login'>Назад</a>")
     if len(password) < 6:
         return HTMLResponse("<h3>Ошибка: Пароль должен быть не менее 6 символов!</h3><a href='/login'>Назад</a>")
 
     anon_id = request.cookies.get("fluent_user_id")
-    user = None
     
-    # --- ЛОГИРОВАНИЕ ---
+    # --- ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННЫХ (ВАЖНО!) ---
+    user = None
+    err_str = ""  # <--- Создаем переменную заранее, чтобы не было ошибки
+    # -----------------------------------------
+
     print(f"🚀 Попытка входа/регистрации: {email}")
 
     # 3. Попытка ВХОДА (Login)
@@ -119,39 +122,43 @@ async def auth_action(request: Request, email: str = Form(...), password: str = 
             user = res.user
             print("✅ Успешный вход!")
     except Exception as login_error:
-        print(f"ℹ️ Вход не удался ({login_error}), пробуем регистрацию...")
+        err_str = str(login_error) # Записываем ошибку, если она есть
+        print(f"ℹ️ Ошибка входа: {err_str}")
+
+    # Проверка на неподтвержденную почту (теперь err_str точно существует)
+    if "Email not confirmed" in err_str:
+        return HTMLResponse(f"""
+            <div style="font-family:sans-serif; max-width:400px; margin:50px auto; padding:20px; border:1px solid #ccc; border-radius:10px;">
+                <h2 style="color:#e11d48;">Требуется подтверждение!</h2>
+                <p>Supabase требует подтвердить Email.</p>
+                <p>Зайдите в настройки Supabase -> Auth -> Providers -> Email и отключите "Confirm Email".</p>
+                <a href='/login' style="display:block; margin-top:20px; color:#2563eb;">Вернуться назад</a>
+            </div>
+        """)
 
     # 4. Попытка РЕГИСТРАЦИИ (Sign Up), если вход не удался
     if not user:
         try:
-            # Отключаем подтверждение почты программно (data={'email_confirm': False} иногда помогает)
             res = supabase.auth.sign_up({
                 "email": email, 
                 "password": password,
                 "options": {"data": {"full_name": "User"}} 
             })
             
-            # ВАЖНО: Supabase может вернуть user=None, если включено подтверждение почты
             if res.user and res.user.identities and len(res.user.identities) > 0:
                 user = res.user
                 print("✅ Успешная регистрация!")
             elif res.user and (not res.user.identities or len(res.user.identities) == 0):
-                return HTMLResponse(f"<h3>Пользователь с таким Email уже существует!</h3><p>Попробуйте войти с правильным паролем.</p><a href='/login'>Назад</a>")
+                return HTMLResponse(f"<h3>Пользователь уже существует, но пароль неверный.</h3><a href='/login'>Назад</a>")
             else:
-                # Если user всё еще None, значит Supabase требует подтверждения почты
-                return HTMLResponse(f"""
-                    <h3>Регистрация отправлена, но вход не выполнен.</h3>
-                    <p>Возможно, Supabase требует подтвердить Email. Проверьте почту или отключите "Confirm Email" в настройках Supabase.</p>
-                    <a href='/login'>Назад</a>
-                """)
+                return HTMLResponse(f"<h3>Регистрация отправлена. Проверьте настройки Supabase (Confirm Email).</h3><a href='/login'>Назад</a>")
 
         except Exception as reg_error:
             print(f"❌ Ошибка регистрации: {reg_error}")
-            return HTMLResponse(f"<h3>Критическая ошибка Supabase:</h3><p>{reg_error}</p><a href='/login'>Назад</a>")
+            return HTMLResponse(f"<h3>Ошибка Supabase:</h3><p>{reg_error}</p><a href='/login'>Назад</a>")
 
-    # Если после всех попыток user так и не получен
     if not user:
-         return HTMLResponse("<h3>Неизвестная ошибка: Пользователь не получен (NULL).</h3><a href='/login'>Назад</a>")
+         return HTMLResponse("<h3>Неизвестная ошибка: Пользователь не получен.</h3><a href='/login'>Назад</a>")
 
     # 5. Профиль и Статистика
     try:
@@ -161,7 +168,7 @@ async def auth_action(request: Request, email: str = Form(...), password: str = 
     except Exception as e:
         print(f"⚠️ Ошибка БД (не критично): {e}")
 
-    # 6. Успешный редирект
+    # 6. Успех
     response = RedirectResponse(url="/", status_code=302)
     response.set_cookie("fluent_user_id", user.id)
     response.set_cookie("fluent_is_auth", "true")
@@ -363,3 +370,6 @@ async def start_mistakes(request: Request):
         "topic_slug": "mistakes", # Важно: маркер, что мы в режиме ошибок
         "ctx": ctx
     })
+
+
+#uvicorn app.main:app --reload
