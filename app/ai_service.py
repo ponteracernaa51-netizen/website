@@ -1,10 +1,13 @@
 import google.generativeai as genai
 import json
+import re
 from app.config import settings
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
-# Схема ответа (без изменений, она правильная)
+# ==========================================
+# 1. СХЕМА ОТВЕТА
+# ==========================================
 response_schema = {
     "type": "OBJECT",
     "properties": {
@@ -12,23 +15,70 @@ response_schema = {
         "deductions": {"type": "STRING"},
         "explanation": {"type": "STRING"},
         "ideal_translation": {"type": "STRING"},
-        "error_type": {"type": "STRING", "enum": ["None", "Grammar", "Vocabulary", "Spelling", "Style", "Critical"]}
+        "error_type": {"type": "STRING", "enum": ["None", "Capitalization", "Style", "Spelling", "Grammar", "Vocabulary", "Critical"]}
     },
     "required": ["score", "deductions", "explanation", "ideal_translation", "error_type"]
 }
 
 generation_config = {
-    "temperature": 0.0, # Ноль фантазий, только логика
+    "temperature": 0.0,
     "top_p": 0.95,
-    "max_output_tokens": 1024,
+    "max_output_tokens": 2048,
     "response_mime_type": "application/json",
     "response_schema": response_schema
 }
 
+# ==========================================
+# 2. МОЗГ СИСТЕМЫ (SYSTEM INSTRUCTION)
+# ==========================================
+SYSTEM_INSTRUCTION = """
+Role: Surgical Language Corrector.
+
+ALGORITHM FOR ERROR ANALYSIS:
+
+1. **EXISTENCE CHECK (Anti-Hallucination):**
+   - BEFORE saying "Add article 'a'", LOOK at the student's text.
+   - Student: "weiting a bus".
+   - *Check:* Does "a" exist? YES.
+   - *Action:* DO NOT correct the article. Only correct the missing preposition or spelling.
+
+2. **PREPOSITION LOGIC ("Wait for"):**
+   - "Wait a bus" -> WRONG.
+   - "Wait FOR a bus" -> RIGHT.
+   - Error: "Grammar (Missing Preposition)". Penalty: -10.
+
+3. **SPELLING vs STYLE:**
+   - "weiting" -> Spelling error (-5).
+   - "he" (lowercase start) -> Capitalization (-2).
+
+SCORING "he is weiting a bus":
+- "he" -> -2.
+- "weiting" -> -5.
+- "waiting [missing for] a bus" -> -10.
+- "a bus" -> Correct (No deduction).
+- Final Score: ~83.
+
+OUTPUT RULES:
+- `explanation`: Write ONLY in {explanation_lang}. Be precise: "Add 'for' after 'waiting'. Fix spelling 'weiting'." (Do not mention the article).
+- `ideal_translation`: "He is waiting for a bus."
+"""
+
 model = genai.GenerativeModel(
     model_name='gemini-2.0-flash-lite',
-    generation_config=generation_config
+    generation_config=generation_config,
+    system_instruction=SYSTEM_INSTRUCTION
 )
+
+# ==========================================
+# 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ==========================================
+def clean_json_string(text: str):
+    """Очистка от Markdown"""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```json\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text
 
 def parse_languages(direction: str):
     lang_map = {
@@ -41,72 +91,37 @@ def parse_languages(direction: str):
     except ValueError:
         return "Unknown", "Unknown"
 
+# ==========================================
+# 4. ВЫПОЛНЕНИЕ
+# ==========================================
 async def evaluate_translation(original: str, user_translation: str, direction: str, interface_lang: str):
     
-    # 1. Определяем языки
     lang_names = {"ru": "Russian", "en": "English", "uz": "Uzbek"}
-    
-    # Язык, на котором пользователь читает интерфейс (для объяснений ошибок)
     explanation_lang = lang_names.get(interface_lang, "English")
-    
-    # Направление перевода
     source_lang, target_lang = parse_languages(direction)
 
-    user_clean = user_translation.strip()
-    original_clean = original.strip()
-
-    # 2. ПРОМПТ С ЖЕСТКИМИ ЯЗЫКОВЫМИ ПРАВИЛАМИ
     prompt = f"""
-    Role: Strict Linguistic Algo.
-    
-    TASK: Evaluate translation quality.
-    
-    PARAMETERS:
-    - Source Language: {source_lang} (Original Text)
-    - Target Language: {target_lang} (The language the student is trying to write in)
-    - Explanation Language: {explanation_lang} (The language for feedback)
+    [CONFIG]
+    Source: {source_lang}
+    Target: {target_lang}
+    Explain in: {explanation_lang}
 
-    INPUT:
-    - Original: "{original_clean}"
-    - Student Input: "{user_clean}"
-
-    ⚠️ STRICT LANGUAGE RULES FOR OUTPUT FIELDS:
-    1. "ideal_translation": MUST be in **{target_lang}**. (Do NOT write it in {source_lang} or {explanation_lang}).
-    2. "explanation": MUST be in **{explanation_lang}**.
-    3. "deductions": Can be short technical notes (e.g., "-2 typo").
-
-    EVALUATION LOGIC (Start 100):
-    - If Student Input has the correct meaning and grammar -> Score 100.
-    - If Student Input is a valid synonym -> Score 100 (Do not correct it to your preferred word).
-    - If Capitalization error (e.g. "paris" vs "Paris") -> -1 point.
-    - If Spelling typo -> -2 points.
-    - If Grammar error -> -5 to -10 points.
-    - If Wrong meaning -> -50 points.
-
-    ANTI-HALLUCINATION:
-    - Never say "'Word' should be 'Word'" if they are the same.
-    - If the only difference is case, say "Capitalization error".
-
-    JSON OUTPUT FORMAT:
-    {{
-        "score": integer,
-        "deductions": "string",
-        "explanation": "string (in {explanation_lang})",
-        "ideal_translation": "string (in {target_lang})",
-        "error_type": "string"
-    }}
+    [DATA]
+    Original: "{original.strip()}"
+    Student: "{user_translation}" 
     """
 
     try:
         response = await model.generate_content_async(prompt)
-        return json.loads(response.text)
+        cleaned_response = clean_json_string(response.text)
+        return json.loads(cleaned_response)
 
     except Exception as e:
         print(f"AI Error: {e}")
         return {
             "score": 0,
             "deductions": "System Error",
-            "explanation": "Xatolik yuz berdi. (Error)",
+            "explanation": "Xatolik yuz berdi.",
             "ideal_translation": "Error",
             "error_type": "Critical"
         }

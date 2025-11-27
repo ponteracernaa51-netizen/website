@@ -37,11 +37,15 @@
                 </div>
 
                 <!-- Вход / Выход -->
+                {% if ctx.is_admin %}
+                    <a href="/admin" class="bg-purple-600 hover:bg-purple-500 px-3 py-1.5 rounded font-bold transition">⚙️ Админ</a>
+                {% endif %}
                 {% if ctx.is_auth %}
                     <a href="/logout" class="text-red-400 hover:text-red-300 border border-slate-700 px-3 py-1 rounded">{{ ctx.ui.nav_logout }}</a>
                 {% else %}
                     <a href="/login" class="bg-blue-600 hover:bg-blue-500 px-4 py-1.5 rounded font-semibold transition">{{ ctx.ui.nav_login }}</a>
                 {% endif %}
+                
             </div>
         </div>
     </nav>

@@ -1,11 +1,16 @@
 import uuid
+import re
+import pandas as pd
+import io
 from fastapi import FastAPI, Request, Form, Response, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse # <-- Вот здесь было изменение
 from fastapi.templating import Jinja2Templates
 from app.database import supabase
 from app.ai_service import evaluate_translation
 from app.translations import UI_TEXTS, TARGET_LANG_NAMES
-import re
+from fastapi import UploadFile, File
+from fastapi import FastAPI, Form
+from app.ai_service import evaluate_translation
 
 app = FastAPI(title="FluentEdgeAI")
 templates = Jinja2Templates(directory="templates")
@@ -13,22 +18,35 @@ templates = Jinja2Templates(directory="templates")
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def get_user_context(request: Request):
-    """Собираем все настройки пользователя из кук"""
+    # ... (старый код получения user_id, lang, dir) ...
     user_id = request.cookies.get("fluent_user_id")
     if not user_id:
         user_id = str(uuid.uuid4())
-        
-    # Настройки по умолчанию
-    lang = request.cookies.get("fluent_lang", "ru") # Язык интерфейса
-    direction = request.cookies.get("fluent_dir", "RU-EN") # Направление
+    lang = request.cookies.get("fluent_lang", "ru")
+    direction = request.cookies.get("fluent_dir", "RU-EN")
     is_auth = request.cookies.get("fluent_is_auth") == "true"
     
+    # --- ДОБАВЛЕНО: Проверка админа (упрощенная) ---
+    # Чтобы не делать запрос к БД при каждом клике, можно пока просто вернуть False,
+    # а в /admin мы проверяем строго. Но для кнопки в меню сделаем запрос:
+    is_admin = False
+    if user_id and is_auth:
+         try:
+            # В реальном проекте лучше кэшировать это в куки, чтобы не нагружать базу
+            res = supabase.table("profiles").select("is_admin").eq("id", user_id).execute()
+            if res.data and res.data[0]['is_admin']:
+                is_admin = True
+         except:
+             pass
+    # -----------------------------------------------
+
     return {
         "user_id": user_id,
         "lang": lang,
         "dir": direction,
         "is_auth": is_auth,
-        "ui": UI_TEXTS.get(lang, UI_TEXTS["ru"]) # Тексты интерфейса
+        "is_admin": is_admin, # <--- Не забудь добавить это в return
+        "ui": UI_TEXTS.get(lang, UI_TEXTS["ru"])
     }
 
 def get_error_phrases(user_id):
@@ -371,5 +389,221 @@ async def start_mistakes(request: Request):
         "ctx": ctx
     })
 
+# --- ADMIN PANEL ---
+
+async def check_admin(request: Request):
+    """Проверяем, является ли текущий пользователь админом"""
+    user_id = request.cookies.get("fluent_user_id")
+    if not user_id:
+        return False
+    
+    try:
+        # Запрашиваем поле is_admin из таблицы profiles
+        res = supabase.table("profiles").select("is_admin").eq("id", user_id).execute()
+        if res.data and res.data[0]['is_admin'] == True:
+            return True
+    except Exception as e:
+        print(f"Admin check error: {e}")
+    
+    return False
+
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_dashboard(request: Request):
+    if not await check_admin(request): return RedirectResponse("/", status_code=302)
+    ctx = get_user_context(request)
+
+    # Загружаем данные
+    topics = supabase.table("topics").select("*").order("id").execute().data
+    levels = supabase.table("levels").select("id, slug").execute().data
+    phrases = supabase.table("phrases").select("topic_id").execute().data
+    
+    # НОВОЕ: Загружаем пользователей (последние 50)
+    users = supabase.table("profiles").select("*").order("created_at", desc=True).limit(50).execute().data
+
+    # ... (код с lvl_map и enriched_topics остается тем же) ...
+    # Просто скопируй старую логику обогащения тем сюда
+    lvl_map = {l['id']: l['slug'].upper() for l in levels}
+    phrase_counts = {}
+    for p in phrases:
+        tid = p['topic_id']
+        phrase_counts[tid] = phrase_counts.get(tid, 0) + 1
+    enriched_topics = []
+    for t in topics:
+        t['level_slug'] = lvl_map.get(t.get('level_id'), '??')
+        t['count'] = phrase_counts.get(t['id'], 0)
+        enriched_topics.append(t)
+
+    return templates.TemplateResponse("admin.html", {
+        "request": request,
+        "ctx": ctx,
+        "topics": enriched_topics,
+        "users": users # <--- Передаем пользователей в шаблон
+    })
+
+@app.post("/admin/add_phrase")
+async def admin_add_phrase(
+    request: Request,
+    topic_id: int = Form(...),
+    text_ru: str = Form(...),
+    text_en: str = Form(...),
+    text_uz: str = Form(...),
+    order_index: int = Form(...)
+):
+    """Обработчик добавления фразы"""
+    
+    if not await check_admin(request):
+        return "Access Denied"
+
+    try:
+        supabase.table("phrases").insert({
+            "topic_id": topic_id,
+            "text_ru": text_ru,
+            "text_en": text_en,
+            "text_uz": text_uz,
+            "order_index": order_index
+        }).execute()
+    except Exception as e:
+        return f"Error adding phrase: {e}"
+
+    # Возвращаемся в админку
+    return RedirectResponse("/admin", status_code=302)
+
+# --- УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ---
+
+@app.post("/admin/toggle_admin")
+async def admin_toggle_user(request: Request, user_id: str = Form(...), is_admin: str = Form(...)):
+    """Переключатель прав администратора (Исправленная версия)"""
+    
+    # Проверка прав (только админ может назначать админов)
+    if not await check_admin(request): 
+        return "Access Denied"
+    
+    # 1. Конвертируем строку из формы в Python-булево
+    # HTML передает "True" или "False" как текст
+    current_status = (is_admin == "True")
+    
+    # 2. Меняем статус на противоположный
+    new_status = not current_status
+    
+    print(f"🔄 Смена прав для {user_id}: {current_status} -> {new_status}")
+
+    try:
+        supabase.table("profiles").update({"is_admin": new_status}).eq("id", user_id).execute()
+    except Exception as e:
+        print(f"❌ Ошибка смены прав: {e}")
+        return f"Error: {e}"
+
+    return RedirectResponse("/admin", status_code=302)
+
+@app.post("/admin/delete_user")
+async def admin_delete_user(request: Request, user_id: str = Form(...)):
+    if not await check_admin(request): return "Access Denied"
+    
+    # Удаляем профиль (авторизация Supabase останется, но вход на сайт перестанет работать)
+    supabase.table("profiles").delete().eq("id", user_id).execute()
+    return RedirectResponse("/admin", status_code=302)
+
+# --- УПРАВЛЕНИЕ КОНТЕНТОМ (УДАЛЕНИЕ) ---
+
+@app.post("/admin/delete_topic")
+async def admin_delete_topic(request: Request, topic_id: int = Form(...)):
+    if not await check_admin(request): return "Access Denied"
+    
+    print(f"🗑 Удаление темы ID: {topic_id}")
+    
+    try:
+        # Благодаря SQL скрипту выше, это удалит и тему, и фразы
+        supabase.table("topics").delete().eq("id", topic_id).execute()
+    except Exception as e:
+        print(f"❌ Ошибка удаления темы: {e}")
+        return f"Database Error: {e}"
+
+    return RedirectResponse("/admin", status_code=302)
+
+@app.get("/admin/topic/{topic_id}", response_class=HTMLResponse)
+async def admin_topic_details(request: Request, topic_id: int):
+    """Страница управления фразами конкретной темы"""
+    if not await check_admin(request): return RedirectResponse("/", status_code=302)
+    
+    ctx = get_user_context(request)
+    
+    # Получаем тему и фразы
+    topic = supabase.table("topics").select("*").eq("id", topic_id).single().execute().data
+    phrases = supabase.table("phrases").select("*").eq("topic_id", topic_id).order("order_index").execute().data
+
+    return templates.TemplateResponse("admin_topic.html", {
+        "request": request,
+        "ctx": ctx,
+        "topic": topic,
+        "phrases": phrases
+    })
+
+@app.post("/admin/delete_phrase")
+async def admin_delete_phrase(request: Request, phrase_id: int = Form(...), topic_id: int = Form(...)):
+    if not await check_admin(request): return "Access Denied"
+    
+    supabase.table("phrases").delete().eq("id", phrase_id).execute()
+    # Возвращаем обратно на страницу темы
+    return RedirectResponse(f"/admin/topic/{topic_id}", status_code=302)
+
+@app.post("/admin/import_excel")
+async def admin_import_excel(
+    request: Request,
+    topic_id: int = Form(...),
+    file: UploadFile = File(...)
+):
+    """Импорт фраз из Excel файла"""
+    
+    # 1. Проверка админа
+    if not await check_admin(request): 
+        return "Access Denied"
+
+    try:
+        # 2. Читаем файл в Pandas DataFrame
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents))
+        
+        # 3. Приводим названия колонок к нижнему регистру (на всякий случай)
+        df.columns = [c.lower().strip() for c in df.columns]
+
+        # 4. Проверяем, есть ли нужные колонки
+        required_cols = ['text_ru', 'text_en', 'text_uz']
+        for col in required_cols:
+            if col not in df.columns:
+                return f"Ошибка: В Excel файле нет колонки '{col}'"
+
+        # 5. Подготовка данных для Supabase
+        phrases_to_insert = []
+        
+        # Определяем начальный order_index (чтобы добавлять в конец)
+        # Если в Excel есть колонка order_index, используем её, иначе авто
+        has_order = 'order_index' in df.columns
+        
+        current_index = 1
+        # Можно сделать запрос к БД, чтобы узнать последний индекс, но для простоты начнем с 1
+        
+        for _, row in df.iterrows():
+            phrase_data = {
+                "topic_id": topic_id,
+                "text_ru": str(row['text_ru']),
+                "text_en": str(row['text_en']),
+                "text_uz": str(row['text_uz']),
+                "order_index": int(row['order_index']) if has_order else current_index
+            }
+            phrases_to_insert.append(phrase_data)
+            current_index += 1
+
+        # 6. Массовая вставка в базу (Bulk Insert)
+        if phrases_to_insert:
+            supabase.table("phrases").insert(phrases_to_insert).execute()
+            print(f"✅ Успешно импортировано {len(phrases_to_insert)} фраз.")
+
+    except Exception as e:
+        print(f"❌ Ошибка импорта: {e}")
+        return f"Error importing file: {e}"
+
+    return RedirectResponse("/admin", status_code=302)
 
 #uvicorn app.main:app --reload
+#venv\Scripts\Activate.ps1

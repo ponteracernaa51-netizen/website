@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto mt-10 mb-20">
+    <div class="flex justify-between items-center mb-8">
+        <h1 class="text-3xl font-bold text-white">🎛️ Админ-панель</h1>
+        <a href="/" class="text-slate-400 hover:text-white">← На сайт</a>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        
+        <!-- КОЛОНКА 1: Управление контентом -->
+        <div>
+            <h2 class="text-xl font-bold text-white mb-4">📂 Темы и Фразы</h2>
+            
+            <!-- Форма добавления фразы (свернутая или упрощенная) -->
+            <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 mb-6">
+                <p class="text-slate-400 text-sm mb-4">Быстрое добавление:</p>
+                <form action="/admin/add_phrase" method="post" class="space-y-3">
+                    <select name="topic_id" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
+                        {% for topic in topics %}
+                        <option value="{{ topic.id }}">[{{ topic.level_slug }}] {{ topic.title_ru }}</option>
+                        {% endfor %}
+                    </select>
+                    <input type="text" name="text_ru" required placeholder="Фраза RU" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
+                    <input type="text" name="text_en" required placeholder="Phrase EN" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
+                    <input type="text" name="text_uz" required placeholder="Ibora UZ" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white">
+                    <input type="hidden" name="order_index" value="1">
+                    <button type="submit" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-2 rounded">Добавить</button>
+                </form>
+            </div>
+
+            <!-- Список тем с удалением -->
+            <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                <table class="w-full text-left text-sm text-slate-400">
+                    <thead class="bg-slate-900 text-slate-200">
+                        <tr>
+                            <th class="p-3">LVL</th>
+                            <th class="p-3">Тема</th>
+                            <th class="p-3 text-right">Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700">
+                        {% for topic in topics %}
+                        <tr class="hover:bg-slate-700/50">
+                            <td class="p-3 font-bold text-blue-400">{{ topic.level_slug }}</td>
+                            <td class="p-3 text-white">
+                                <a href="/admin/topic/{{ topic.id }}" class="hover:underline hover:text-blue-400">
+                                    {{ topic.title_ru }} ({{ topic.count }})
+                                </a>
+                            </td>
+                            <td class="p-3 text-right flex justify-end gap-2">
+                                <a href="/admin/topic/{{ topic.id }}" class="bg-blue-600 text-white px-2 py-1 rounded text-xs">Edit</a>
+                                <form action="/admin/delete_topic" method="post" onsubmit="return confirm('Удалить тему и ВСЕ фразы внутри?');">
+                                    <input type="hidden" name="topic_id" value="{{ topic.id }}">
+                                    <button class="bg-red-600 text-white px-2 py-1 rounded text-xs">Del</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- КОЛОНКА 2: Управление пользователями -->
+        <div>
+            <h2 class="text-xl font-bold text-white mb-4">👥 Пользователи</h2>
+            <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                <table class="w-full text-left text-sm text-slate-400">
+                    <thead class="bg-slate-900 text-slate-200">
+                        <tr>
+                            <th class="p-3">Email</th>
+                            <th class="p-3">Роль</th>
+                            <th class="p-3 text-right">Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700">
+                        {% for user in users %}
+                        <tr class="hover:bg-slate-700/50">
+                            <td class="p-3 text-white truncate max-w-[150px]" title="{{ user.email }}">{{ user.email }}</td>
+                            <td class="p-3">
+                                {% if user.is_admin %}
+                                <span class="bg-purple-600 text-white text-xs px-2 py-0.5 rounded">Admin</span>
+                                {% else %}
+                                <span class="bg-slate-600 text-white text-xs px-2 py-0.5 rounded">User</span>
+                                {% endif %}
+                            </td>
+                            <td class="p-3 text-right flex justify-end gap-2">
+                                <!-- Кнопка Админ/Юзер -->
+                                <form action="/admin/toggle_admin" method="post">
+                                    <input type="hidden" name="user_id" value="{{ user.id }}">
+                                    <input type="hidden" name="is_admin" value="{{ 'True' if user.is_admin else 'False' }}">
+                                    <button class="text-xs border border-slate-500 px-2 py-1 rounded hover:bg-slate-700 transition">
+                                    {{ '⬇️ Снять' if user.is_admin else '⬆️ Назначить' }}
+                                </form>
+                                <!-- Кнопка Удалить -->
+                                <form action="/admin/delete_user" method="post" onsubmit="return confirm('Удалить пользователя?');">
+                                    <input type="hidden" name="user_id" value="{{ user.id }}">
+                                    <button class="bg-red-900 text-red-200 px-2 py-1 rounded text-xs hover:bg-red-800">X</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Блок импорта из Excel -->
+        <div class="bg-slate-800 rounded-2xl p-8 border border-slate-700 shadow-lg mb-10">
+            <h2 class="text-xl font-bold text-green-400 mb-4">📗 Импорт из Excel</h2>
+            
+            <form action="/admin/import_excel" method="post" enctype="multipart/form-data" class="space-y-4">
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+                    <!-- Выбор темы -->
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Куда импортировать?</label>
+                        <select name="topic_id" class="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-green-500 outline-none">
+                            {% for topic in topics %}
+                            <option value="{{ topic.id }}">
+                                [{{ topic.level_slug }}] {{ topic.title_ru }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- Загрузка файла -->
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Файл (.xlsx)</label>
+                        <input type="file" name="file" accept=".xlsx, .xls" required
+                            class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-green-600 file:text-white hover:file:bg-green-500">
+                    </div>
+                </div>
+
+                <div class="bg-slate-900/50 p-4 rounded text-sm text-slate-400">
+                    <p class="font-bold mb-1">⚠️ Требования к файлу Excel:</p>
+                    <p>Первая строка должна содержать заголовки:</p>
+                    <code class="bg-slate-700 px-1 rounded text-white">text_ru</code>, 
+                    <code class="bg-slate-700 px-1 rounded text-white">text_en</code>, 
+                    <code class="bg-slate-700 px-1 rounded text-white">text_uz</code>
+                    <span class="ml-2">(опционально: order_index)</span>
+                </div>
+
+                <button type="submit" class="w-full bg-green-700 hover:bg-green-600 text-white font-bold py-3 rounded-lg transition">
+                    🚀 Загрузить фразы
+                </button>
+            </form>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
