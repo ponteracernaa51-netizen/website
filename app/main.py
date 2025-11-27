@@ -261,7 +261,7 @@ async def start_training(request: Request, topic_slug: str):
     # 2. Пройденные фразы
     completed_ids = [
         x['phrase_id'] for x in 
-        supabase.table("user_attempts").select("phrase_id").eq("user_id", ctx["user_id"]).gt("ai_score", 70).execute().data
+        supabase.table("user_attempts").select("phrase_id").eq("user_id", ctx["user_id"]).gt("ai_score", 40).execute().data
     ]
 
     # 3. Ищем следующую

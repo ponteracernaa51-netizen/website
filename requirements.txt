@@ -2,6 +2,7 @@ fastapi
 uvicorn
 gunicorn
 jinja2
+pandas
 python-multipart
 supabase
 google-generativeai
