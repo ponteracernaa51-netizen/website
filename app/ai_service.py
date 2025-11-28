@@ -3,224 +3,154 @@ import logging
 import json
 from typing import Optional, Dict, Any
 from enum import Enum
-from pydantic import BaseModel, Field, validator  # Для валидации ответа (опционально)
+from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Enum для error_type (для consistency)
+# --- CONFIG ---
 class ErrorType(str, Enum):
     NONE = "None"
     CAPITALIZATION = "Capitalization"
-    STYLE = "Style"
-    SPELLING = "Spelling"
     GRAMMAR = "Grammar"
     VOCABULARY = "Vocabulary"
-    CRITICAL = "Critical"
+    SPELLING = "Spelling"
+    CRITICAL = "Critical" # Смысл неверен
 
-# Pydantic модель для ответа (валидация)
 class EvaluationResponse(BaseModel):
     score: int = Field(..., ge=0, le=100)
     deductions: str
     explanation: str
-    ideal_translation: str
+    ideal_translation: str  # Здесь мы вернем Reference или исправленный вариант
     error_type: ErrorType
 
-    @validator('error_type')
-    def validate_error_type(cls, v):
-        if v not in ErrorType:
-            raise ValueError(f'Invalid error_type: {v}')
-        return v
-
-# Глобальный клиент с lock для thread-safety
 _client: Optional[AsyncOpenAI] = None
-_client_lock = asyncio.Lock()
 
-async def _init_client() -> Optional[AsyncOpenAI]:
+def _get_client():
     global _client
-    async with _client_lock:
-        if _client is not None:
-            return _client
+    if _client: return _client
+    # Убедитесь, что ключи в .env верные для Gemini или Llama (Groq)
+    if settings.LLAMA_API_KEY:
+        _client = AsyncOpenAI(api_key=settings.LLAMA_API_KEY, base_url=settings.LLAMA_BASE_URL)
+    return _client
 
-        if not settings.LLAMA_API_KEY:
-            logger.error("LLAMA_API_KEY не найден.")
-            return None
+def clean_json(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```json"): text = text[7:]
+    if text.startswith("```"): text = text[3:]
+    if text.endswith("```"): text = text[:-3]
+    return text.strip()
 
-        try:
-            _client = AsyncOpenAI(
-                api_key=settings.LLAMA_API_KEY,
-                base_url=settings.LLAMA_BASE_URL,  # e.g., "https://api.groq.com/openai/v1"
-                timeout=30.0  # Таймаут 30 сек
-            )
-            logger.info("LLaMA Client initialized.")
-            return _client
-        except Exception as e:
-            logger.error(f"LLaMA Init Error: {e}")
-            return None
-
+# --- MAIN LOGIC ---
 async def evaluate_translation(
-    original: str,
-    user_translation: str,
-    direction: str,
+    original: str, 
+    reference_translation: str,  # <--- НОВЫЙ АРГУМЕНТ (Текст из БД: text_en или text_uz)
+    user_translation: str, 
+    direction: str, 
     interface_lang: str
 ) -> Dict[str, Any]:
-    """
-    Оценивает перевод с использованием LLaMA 3.3 на Groq.
     
-    Args:
-        original: Оригинальный текст.
-        user_translation: Перевод пользователя.
-        direction: Направление, e.g., "en-ru".
-        interface_lang: Язык интерфейса для explanation, e.g., "ru".
-    
-    Returns:
-        Dict с score, explanation и т.д.
-    """
-    # Валидация входов
+    # Базовая валидация
     if not original.strip() or not user_translation.strip():
-        logger.warning("Пустой original или user_translation.")
-        return {
-            "score": 0,
-            "deductions": "Empty input",
-            "explanation": "Входные данные пусты.",
-            "ideal_translation": "",
-            "error_type": ErrorType.CRITICAL.value
-        }
-    
-    if len(direction.strip()) < 3 or '-' not in direction:
-        logger.error(f"Invalid direction: {direction}")
-        return {
-            "score": 0,
-            "deductions": "Invalid direction",
-            "explanation": "Неверный формат направления перевода (ожидается 'en-ru').",
-            "ideal_translation": "",
-            "error_type": ErrorType.CRITICAL.value
-        }
+        return {"score": 0, "explanation": "Empty input", "error_type": "Critical"}
 
-    client = await _init_client()
-    if not client:
-        return {
-            "score": 0,
-            "deductions": "Service config error",
-            "explanation": "Ошибка конфигурации сервиса.",
-            "ideal_translation": "",
-            "error_type": ErrorType.CRITICAL.value
-        }
+    client = _get_client()
+    if not client: 
+        return {"score": 0, "explanation": "AI Config Error", "error_type": "Critical"}
 
-    # Расширенный lang_map
-    lang_map = {
-        "en": "English", "ru": "Russian", "uz": "Uzbek",
-        "de": "German", "fr": "French", "es": "Spanish",
-        "it": "Italian", "pt": "Portuguese", "ja": "Japanese", "zh": "Chinese"
-    }
-    
+    # Определение языков
+    lang_map = {"en": "English", "uz": "Uzbek", "ru": "Russian"}
     try:
-        src_code, tgt_code = direction.lower().strip().split('-')
-        source_lang = lang_map.get(src_code, "Unknown Source")
-        target_lang = lang_map.get(tgt_code, "Unknown Target")
-    except ValueError as e:
-        logger.error(f"Direction parse error: {e}, direction={direction}")
-        source_lang, target_lang = "Unknown Source", "Unknown Target"
+        parts = direction.lower().split('-') # пример: ru-en
+        src_lang = lang_map.get(parts[0], "Russian")
+        tgt_lang = lang_map.get(parts[1], "English")
+    except: 
+        src_lang, tgt_lang = "Russian", "English"
 
-    explanation_lang = lang_map.get(interface_lang.lower(), "English")
+    # Настройка языка объяснения (Feedback Language)
+# Настройка языка объяснения (Feedback Language)
+    explain_instr = f"in {lang_map.get(interface_lang, 'English')}"
+    if "uz" in interface_lang.lower():
+        # Было: "Xato: ..."
+        # Стало: "Izoh: ..." (чтобы не пугать слово "Ошибка" при синонимах)
+        explain_instr = """
+        in UZBEK (Latin script).
+        Format: 
+        - If score is 100: "Barakalla! Tarjima aniq."
+        - If score is 90-99 (Synonym): "To'g'ri: [Reference]. Izoh: Sizning varianingiz ham to'g'ri (sinonim)."
+        - If score < 90: "To'g'ri: [Reference]. Xato: [Explain error]."
+        """
 
-    # Системный промпт (строже для JSON)
-    system_instruction = f"""
-    You are a Strict Language Teacher. Respond ONLY with VALID JSON. No extra text.
+    # Новый System Prompt для СРАВНЕНИЯ
+    system_prompt = f"""
+    You are a strict Language Examiner. 
+    Source Language: {src_lang}
+    Target Language: {tgt_lang}
+    
+    SPECIAL RULE FOR UZBEK SOURCE:
+    - The Uzbek word "U" implies both "He" and "She". 
+    - If Source is Uzbek and Reference uses "He", but Student uses "She" (or vice versa), ACCEPT IT as correct. Do not deduct points for gender mismatch unless context clearly defines it.
+    
+    TASK:
+    Compare the Student's translation against the OFFICIAL REFERENCE.
 
-    JSON SCHEMA (exact keys, no extras):
+    SCORING RULES:
+    1. EXACT MATCH: If Student == Reference (ignoring case/punctuation) -> Score 100.
+    2. SYNONYMS: If Student uses valid synonyms (e.g., 'car' vs 'automobile') AND grammar is perfect -> Score 95-100. Mention that the Reference uses a different word but Student is correct.
+    3. GRAMMAR ERROR: If meaning is close but grammar is wrong -> Score 60-80.
+    4. WRONG MEANING: If Student says something totally different from Reference -> Score 0-40.
+
+    OUTPUT INSTRUCTIONS:
+    - Provide feedback {explain_instr}.
+    - 'ideal_translation' field must contain the OFFICIAL REFERENCE provided below.
+    - 'deductions' field: Short summary of errors.
+
+    OUTPUT JSON FORMAT:
     {{
-        "score": integer (0-100, strict penalties for errors),
-        "deductions": string (brief summary of all errors, e.g., "Grammar: double verb; Spelling: 'he'->'the'"),
-        "explanation": string (detailed fixes in {explanation_lang}, e.g., "Удалите 'are' (дубликат глагола). 'In' -> 'at' для точности. 'He' -> 'the'."),
-        "ideal_translation": string (perfect translation in {target_lang}, natural and concise),
-        "error_type": string (one of: "None", "Capitalization", "Style", "Spelling", "Grammar", "Vocabulary", "Critical")
+        "score": integer (0-100),
+        "deductions": "string",
+        "explanation": "string",
+        "ideal_translation": "string",
+        "error_type": "None | Grammar | Vocabulary | Spelling | Critical"
     }}
     """
 
-    # Пользовательский промпт (с примерами)
+    # Данные для ИИ
     user_prompt = f"""
-    Analyze translation from {source_lang} ({src_code}) to {target_lang} ({tgt_code}).
-
-    Original: "{original.strip()}"
-    Student: "{user_translation.strip()}"
-
-    RULES:
-    1. Anti-Hallucination: Only critique existing words; don't invent missing ones.
-    2. Grammar: Penalize harshly (e.g., "we are stayed" -> Critical, score <50).
-    3. Typos: "he hotel" -> Spelling error, deduct 10-20 points.
-    4. Score: 100 for perfect; deduct per error (e.g., 1 minor= -5, critical= -50).
-    5. Ideal: Keep original meaning, natural phrasing.
-
-    Example Input: Original: "We stayed at the hotel." Student: "We are stayed in he hotel."
-    Example Output: {{"score":40,"deductions":"Grammar: double verb; Spelling: 'he'->'the'","explanation":"Удалите 'are' (дубликат глагола). 'In' -> 'at' для точности. 'He' -> 'the'.","ideal_translation":"We stayed at the hotel.","error_type":"Grammar"}}
+    Original Phrase ({src_lang}): "{original}"
+    OFFICIAL REFERENCE ({tgt_lang}): "{reference_translation}"
+    Student Translation: "{user_translation}"
     """
+    
+    try:
+        response = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile", # Или gemini-2.0-flash
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1, # Ставим низкую температуру для строгости
+            response_format={"type": "json_object"} # Force JSON
+        )
+        
+        content = response.choices[0].message.content
+        result = json.loads(clean_json(content))
+        
+        # Страховка: если ИИ решил поменять эталон, принудительно возвращаем эталон из БД
+        # Но если синоним верный (Score=100), можно оставить как есть или показать оба варианта.
+        # Для простоты вернем Reference из базы, чтобы юзер знал, чего мы от него хотели.
+        if result.get("score") < 100:
+             result["ideal_translation"] = reference_translation
 
-    # Основная модель и fallback
-    models_to_try = ["llama-3.3-70b-versatile", "llama3-70b-8192"]  # Fallback на стабильную модель
-    max_retries = 3
+        return result
 
-    for model in models_to_try:
-        logger.info(f"Trying model: {model}")
-        for attempt in range(max_retries):
-            try:
-                response = await client.chat.completions.create(
-                    model=model,  # Исправлено: LLaMA 3.3 для Groq (или fallback)
-                    messages=[
-                        {"role": "system", "content": system_instruction},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.0,
-                    max_tokens=512,
-                    response_format={"type": "json_object"}
-                )
-
-                content = response.choices[0].message.content
-                if not content:
-                    raise ValueError("Empty response content")
-
-                # Логируем usage
-                usage = getattr(response, 'usage', None)
-                if usage:
-                    logger.info(f"Tokens used: prompt={usage.prompt_tokens}, completion={usage.completion_tokens}")
-
-                # Парсинг и валидация
-                result_dict = json.loads(content)
-                result = EvaluationResponse(**result_dict).dict()  # Валидация через Pydantic
-                logger.info(f"Evaluation success with {model}: score={result['score']}")
-                return result
-
-            except json.JSONDecodeError as e:
-                logger.error(f"Attempt {attempt+1} with {model}: Invalid JSON: {content[:200] if 'content' in locals() else 'N/A'}... Error: {e}")
-                if attempt == max_retries - 1:
-                    break  # Переходим к следующей модели
-                await asyncio.sleep(2 ** attempt)
-
-            except openai.BadRequestError as e:
-                error_msg = str(e)
-                if "model_decommissioned" in error_msg:
-                    logger.warning(f"Model {model} decommissioned. Switching to fallback.")
-                    break  # Переходим к следующей модели без retry
-                logger.error(f"Attempt {attempt+1} with {model}: BadRequest: {e}")
-                if attempt == max_retries - 1:
-                    break
-                await asyncio.sleep(2 ** attempt)
-
-            except Exception as e:
-                logger.error(f"Attempt {attempt+1} with {model}: LLaMA API Error: {e}", exc_info=True)
-                if attempt == max_retries - 1:
-                    break
-                await asyncio.sleep(2 ** attempt)
-
-        # Если все retry для этой модели провалились, пробуем следующую
-
-    # Fallback после всех моделей
-    logger.error("All models failed.")
-    return {
-        "score": 0,
-        "deductions": "Model Error",
-        "explanation": "Ошибка модели. Обратитесь к администратору.",
-        "ideal_translation": "",
-        "error_type": ErrorType.CRITICAL.value
-    }
+    except Exception as e:
+        logger.error(f"AI Evaluation Error: {e}")
+        # Фолбэк на случай ошибки ИИ
+        return {
+            "score": 0, 
+            "explanation": "System error during check.", 
+            "ideal_translation": reference_translation,
+            "error_type": "Critical"
+        }
