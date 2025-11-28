@@ -304,24 +304,49 @@ async def check_answer(
     topic_slug: str = Form(...)
 ):
     ctx = get_user_context(request)
-    source_lang, _ = ctx["dir"].split("-")
+    
+    # 1. ПОЛУЧАЕМ ФРАЗУ ИЗ БАЗЫ ДАННЫХ
+    # Нам нужно достать "эталонный" перевод, которого нет в форме
+    try:
+        response = supabase.table("phrases").select("*").eq("id", phrase_id).execute()
+        if not response.data:
+            raise ValueError("Phrase not found")
+        phrase_data = response.data[0]
+    except Exception as e:
+        print(f"DB Error: {e}")
+        return HTMLResponse("Error fetching phrase", status_code=500)
 
-    # Формируем направление для AI (например "Russian -> English")
-    dir_map = {"RU": "Russian", "EN": "English", "UZ": "Uzbek"}
-    direction_str = f"{dir_map.get(source_lang)} -> {dir_map.get(target_lang_code)}"
+    # 2. ОПРЕДЕЛЯЕМ ЭТАЛОН (Reference)
+    # ctx["dir"] выглядит как "ru-en", "en-uz" и т.д.
+    # Нам нужно понять, на какой язык переводим, чтобы взять нужное поле из базы.
+    
+    target = target_lang_code.lower() # en, ru, или uz
+    reference_text = ""
 
-    # Проверка AI
+    if target == "en":
+        reference_text = phrase_data.get("text_en", "")
+    elif target == "ru":
+        reference_text = phrase_data.get("text_ru", "")
+    elif target == "uz":
+        reference_text = phrase_data.get("text_uz", "")
+    
+    # Страховка, если вдруг поле пустое
+    if not reference_text:
+        reference_text = "Translation missing in database"
+
+    # 3. ПРОВЕРКА AI (С НОВЫМ АРГУМЕНТОМ)
     ai_result = await evaluate_translation(
         original=original_text,
+        reference_translation=reference_text, # <--- ПЕРЕДАЕМ ЭТАЛОН
         user_translation=user_translation,
-        direction=direction_str,
+        direction=ctx["dir"], # Лучше передавать короткий код, например "ru-en"
         interface_lang=ctx["lang"]
     )
 
-    # Сохранение
+    # Сохранение (без изменений)
     try:
         supabase.table("user_attempts").insert({
-            "user_id": ctx["user_id"], # Если не логинился - тут анонимный ID, если логинился - реальный
+            "user_id": ctx["user_id"], 
             "phrase_id": phrase_id,
             "direction": ctx["dir"],
             "user_translation": user_translation,
@@ -333,7 +358,7 @@ async def check_answer(
         print(f"Save error: {e}")
 
     # Для повторного отображения вопроса
-    target_lang_name = TARGET_LANG_NAMES[ctx["lang"]].get(target_lang_code, target_lang_code)
+    target_lang_name = TARGET_LANG_NAMES.get(ctx["lang"], {}).get(target_lang_code, target_lang_code)
 
     return templates.TemplateResponse("training.html", {
         "request": request,
@@ -343,7 +368,7 @@ async def check_answer(
         "target_lang_name": target_lang_name,
         "result": ai_result,
         "user_input": user_translation,
-        "topic_slug": topic_slug, # Если тут будет "mistakes", кнопка Next отправит на /mistakes
+        "topic_slug": topic_slug,
         "ctx": ctx
     })
 
